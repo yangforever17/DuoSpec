@@ -1,0 +1,66 @@
+\section{Motivation and Context}
+\label{sec:background}
+
+\begin{figure*}[!t]
+  \centering
+  \includegraphics[width=\textwidth,height=8cm,keepaspectratio]{f1_exact_moe_subspec.pdf}
+  \caption{Expert-supply problem and system. (a) Verification expands the expert
+  union. Exact replaces full BF16 page-in with W4 reuse and bit-exact recovery;
+  cold W4 bases still require page-in. (b) Token decisions, shared decoder views,
+  hardware, and execution. Prefill runs once; both views share one KV allocation.
+  Native verification overwrites draft KV; commit retains target-authorized inputs.
+  Outlined tokens mark roots; KV rows are successive states. Badges connect the
+  views. Solid arrows show data or execution; dashed links show control or view
+  selection. Examples are schematic.}
+  \label{fig:overview}
+\end{figure*}
+
+\subsection{Verification changes the MoE working set}
+
+In one SD round, a draft proposes up to $\gamma$ tokens and the target verifies the
+root and proposals together. Native target logits authorize the longest accepted
+prefix and supply a replacement at the first mismatch
+\cite{leviathan2023fast,chen2023speculativesampling}. Accepted length captures saved
+target invocations, but not the expert state needed by that verification pass.
+
+Let $E_{\ell,t}$ denote the experts routed at layer $\ell$ and position $t$. Batched
+verification exposes
+\begin{equation}
+U_{\ell,\gamma}(t)=\bigcup_{i=0}^{\gamma}E_{\ell,t+i},\qquad
+A_{\ell,\gamma}(t)=
+\frac{|U_{\ell,\gamma}(t)|}
+{(\gamma+1)^{-1}\sum_{i=0}^{\gamma}|E_{\ell,t+i}|}.
+\label{eq:working-set}
+\end{equation}
+Here $A_{\ell,\gamma}$ measures cross-position overlap: the union is monotone in
+$\gamma$, but shared routes slow its growth. If $C^{16}_{\ell}$ is the resident BF16
+set, then $|U_{\ell,\gamma}\setminus C^{16}_{\ell}|$ lower-bounds the distinct
+nonresident experts an ordinary verifier must supply even with perfect within-pass
+reuse. Figure~\ref{fig:overview}(a) compares the supply paths for these missing
+experts; the registered motivation trace quantifies the union and its misses.
+
+Three pressures follow. Wider verification can demand more routed experts at once;
+an independently parameterized draft stores another expert pool; and a second KV
+cache duplicates sequence state. All three materialize closely related information
+twice. This suggests the paper's organizing principle: reuse compact target state
+across speculation and authoritative verification wherever exactness can be audited.
+
+\subsection{Relationship to prior work}
+
+Speculative and blockwise decoding establish target-validated generation
+\cite{stern2018blockwise,leviathan2023fast}; self-speculative and quantized variants
+reduce separate draft state or reuse representations across precisions
+\cite{zhang2024draftverify,elhoushi2024layerskip,zhao2025qspec,wang2025subspec}.
+MoE systems instead optimize placement, caching, prefetch, CPU execution, or routing
+\cite{sheng2023flexgen,xue2024moeinfinity,du2024sida,kong2024swapmoe,hwang2024pregated},
+while MoESD, SS-MoE, and SpecMoE specialize speculation for sparse models
+\cite{huang2025moesd,zheng2026ssmoe,bang2026specmoe}. DFVG maps draft and verification
+to complementary devices \cite{lu2026dfvg}; our narrower question is how one
+memory-bounded GPU supplies a data-dependent expert union. The distinction is exact
+supply: a requested nonresident BF16 routed expert is reconstructed bitwise from the
+target-derived W4 object used to draft, with the target router and native verifier
+unchanged.
+
+\IfFileExists{../tables/generated/paper_motivation_results_en.tex}{%
+\input{../tables/generated/paper_motivation_results_en}%
+}{}

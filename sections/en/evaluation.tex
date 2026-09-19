@@ -1,0 +1,260 @@
+\section{Evaluation}
+\label{sec:evaluation}
+
+\subsection{Methodology}
+
+We ask whether the coupled design improves end-to-end low-memory MoE decoding, whether
+the gain transfers across GPU generations and memory budgets, and whether the measured
+expert traffic supports the proposed mechanism. Table~\ref{tab:setup-fairness}
+summarizes the controlled comparison.
+
+\begin{table*}[t]
+  \centering
+  \caption{Evaluation matrix and controlled baseline contract. All methods use the
+  same target checkpoints, prompts, output policy, runtime, and memory ceiling.}
+  \label{tab:setup-fairness}
+  \footnotesize
+  \begin{minipage}[t]{0.51\textwidth}
+  \textbf{(a) Target models}\\[-1pt]
+  \begin{tabular*}{\linewidth}{@{\extracolsep{\fill}}lrrrr@{}}
+    \toprule
+    Target & Size (GiB) & Layers & Experts/layer & Top-$k$ \\
+    \midrule
+    Mixtral-8x7B & 87.0 & 32 & 8 & 2 \\
+    DeepSeek-V2-Lite & 29.3 & 27 & 64 & 6 \\
+    Qwen1.5-MoE & 26.7 & 24 & 60 & 4 \\
+    OLMoE-1B-7B & 12.9 & 16 & 64 & 8 \\
+    \bottomrule
+  \end{tabular*}
+  \end{minipage}%
+  \hfill
+  \begin{minipage}[t]{0.47\textwidth}
+  \textbf{(b) Compared execution paths}\\[-1pt]
+  \begin{tabular*}{\linewidth}{@{\extracolsep{\fill}}lll@{}}
+    \toprule
+    Method & Draft path & Verification supply \\
+    \midrule
+    Classic SubSpec & target W4 & full BF16 page-in \\
+    SS-MoE & reduced-$k$ & native BF16 \\
+    SpecMoE & pinned+remap & native BF16 \\
+    Ours & shared target W4 & exact recovery \\
+    \bottomrule
+  \end{tabular*}
+  \end{minipage}
+\end{table*}
+
+The headline uses an NVIDIA A100 and an 8~GiB software-enforced budget; cross-platform
+experiments repeat the matched Qwen and DeepSeek matrix on RTX~4090 and RTX~5090,
+while the deployment sweep uses 8, 12, 16, 20, and 24~GiB on RTX~4090. Four workloads cover
+reasoning, code, long-input summarization, and dialogue: GSM8K
+\cite{cobbe2021training}, HumanEval \cite{chen2021codex}, BillSum
+\cite{kornilova2019billsum}, and MT-Bench first turn \cite{zheng2023mtbench}.
+
+Each cell uses four fixed prompts and three fresh-process replicas with 128 timed
+output tokens. Throughput counts committed, target-authorized tokens over the complete
+prefill--draft--verify--commit path. We first pair every method with its Classic
+MoE-SubSpec run on the same prompt and replica, then report workload and model
+geometric means; error bars use a paired hierarchical 95\% bootstrap. The headline
+contains 180 complete execution bundles and 528 matched prompt ratios.
+
+Correctness is established before timing: registered corrections must reconstruct
+the source BF16 bit pattern, recovered experts must match the native expert operator,
+and verification must overwrite provisional KV state while preserving the clean
+prefix. The target router, native BF16 operator, and greedy acceptance rule are
+unchanged; any undeclared full-BF16 fallback invalidates an exact run.
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\textwidth]{f2_classic_normalized_headline.pdf}
+  \caption{End-to-end throughput at 8~GiB, normalized to matched Classic
+  MoE-SubSpec. Bars group four workloads within each model; dashed lines mark the
+  Classic baseline, error bars show paired uncertainty, and labels report per-model
+  geometric means. Mixtral--SpecMoE is OOM under the common budget.}
+  \label{fig:f2}
+\end{figure*}
+
+\subsection{End-to-end performance}
+
+Figure~\ref{fig:f2} shows that the coupled system consistently converts compact draft
+state into target-side speedup. Across all four model families, \system achieves a
+1.96$\times$ geometric mean over Classic MoE-SubSpec. The gains are
+2.57$\times$ on Mixtral, 2.12$\times$ on DeepSeek, 1.64$\times$ on Qwen, and
+1.65$\times$ on OLMoE. The result spans reasoning, code, summarization, and dialogue
+rather than depending on a single prompt style.
+
+The comparison also separates the benefit of speculation from the benefit of exact
+cross-phase reuse. SS-MoE and SpecMoE accelerate selected cells, but \system attains
+the highest model-level geometric mean in every family. On Mixtral, ordinary pinned
+BF16 speculation cannot enter the shared 8~GiB envelope, whereas the W4 base and
+compact correction representation retain an executable verification path. The
+largest gains appear where the verifier would otherwise repeatedly move the widest
+expert state, matching the system's design objective.
+
+\textbf{Consistency across workloads.} Every completed \system bar in
+Fig.~\ref{fig:f2} remains above its matched Classic run. This matters because the four
+workloads exercise different sequence shapes: GSM8K emphasizes iterative reasoning,
+HumanEval short code continuation, BillSum long-input summarization, and MT-Bench
+dialogue. The gain is therefore not produced by one favorable prompt length. Nor is
+it a claim that model size alone determines speedup. The relevant quantity is the
+joint pressure of the routed union, expert footprint, and reusable W4 residency. The
+per-model geometric means summarize that interaction without hiding the workload
+distribution behind a single aggregate.
+
+\textbf{A demanding baseline contract.} Classic MoE-SubSpec already uses the target's
+quantized experts as a highly aligned training-free draft and verifies proposals with
+the original target. It therefore captures the speculative benefit available before
+our exact-reuse mechanism is enabled. Normalizing each prompt and replica to this
+path asks the narrow systems question of the paper: once proposal quality and target
+semantics are fixed, can one compact target state eliminate duplicated expert and
+sequence movement? The consistent cell-level gains answer that question directly:
+exact cross-phase reuse reduces duplicated state movement while preserving the same
+proposal and verification semantics.
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=0.98\textwidth]{f3_cross_platform_mechanism.pdf}
+  \caption{Generality and mechanism evidence. (a) Workload and geometric-mean
+  speedups over matched Classic MoE-SubSpec on three GPUs at 8~GiB. (b) The
+  deployment envelope on RTX~4090 over 8, 12, 16, 20, and 24~GiB; shading spans workloads.
+  (c) Increasing proposal width expands the verification expert union while draft
+  coverage rises. Marker size reflects the full-BF16 traffic lower bound. (d) Exact
+  recovery replaces full-BF16 movement with compact correction traffic and reuses
+  resident W4 bases.}
+  \label{fig:f3}
+\end{figure*}
+
+\subsection{Generality and mechanism}
+
+\textbf{Across hardware.} Figure~\ref{fig:f3}(a) preserves the same mechanism across
+three GPU generations. DeepSeek reaches 2.12$\times$, 1.25$\times$, and 1.48$\times$
+on A100, RTX~5090, and RTX~4090; Qwen reaches 1.64$\times$, 1.82$\times$, and
+1.31$\times$. Every platform--model geometric mean remains above Classic despite
+different compute-to-bandwidth balances, showing that the benefit follows the state
+hierarchy rather than one device-specific kernel profile.
+
+\textbf{Across memory budgets.} Figure~\ref{fig:f3}(b) shows a broad deployment
+envelope rather than a single capacity point. Across 8, 12, 16, 20, and 24~GiB,
+DeepSeek delivers 1.48$\times$, 1.88$\times$, 1.77$\times$, 1.82$\times$, and
+1.70$\times$; Qwen delivers 1.31$\times$, 1.72$\times$, 1.59$\times$,
+1.63$\times$, and 1.49$\times$. The dense sweep exposes a stable benefit throughout
+the tested interval and discrete residency transitions as more W4 bases and recovered
+BF16 experts fit in HBM.
+
+\textbf{Why it works.} Figure~\ref{fig:f3}(c) connects proposal width to the physical
+MoE working set. As $\gamma$ increases through 1, 2, 4, and 8, draft coverage rises,
+but the verification union also expands; a design that supplies every new member as a
+complete BF16 expert gives back part of the speculative gain. Figure~\ref{fig:f3}(d)
+shows the response: correction traffic is 38\% smaller than the corresponding full
+BF16 movement, and 89\% of DeepSeek and 76\% of Qwen recovery bases are already
+resident. One compact expert state therefore contributes twice---first to aligned
+drafting, then to exact verification---while shared prefill and KV management remove
+the remaining cross-phase duplication.
+
+Taken together, the figures establish one causal story: speculative width creates a
+larger expert-supply opportunity; target-derived W4 state makes that opportunity
+reusable; exact correction preserves native verification; and unified residency plus
+shared KV turns the representation advantage into end-to-end throughput across
+models, workloads, budgets, and hardware platforms.
+
+\textbf{Cross-figure triangulation.} The four panels of Fig.~\ref{fig:f3} measure
+different links of that story rather than four unrelated optimizations. Panel (c)
+shows the demand that verification creates; panel (d) shows how much of that demand
+can be served from a smaller transferred representation and an already resident
+base. Panel (b) then varies the capacity available to retain those views, and panel
+(a) varies the machine balance that prices transfer and reconstruction. Their common
+outcome---speedup above Classic across every platform--model mean---is the expected
+signature of state reuse whose value changes in magnitude, but not in direction,
+with the deployment environment.
+
+\section{Discussion}
+\label{sec:discussion}
+
+\textbf{The contribution is the coupling, not an isolated fast path.} A quantized
+draft alone still leaves the verifier to move complete experts, while compact expert
+repair alone still pays for an independent draft and duplicated sequence state.
+\system joins these choices around one target-derived object: the W4 expert generates
+the proposal, survives as reusable residency, and becomes the base for exact BF16
+materialization. The shared router and dense path align the two execution views;
+unified W4/BF16 residency turns alignment into memory reuse; shared prefill and KV
+management carry that reuse across the entire decoding round. Each mechanism removes
+a different form of duplication, and their composition is what converts a smaller
+representation into end-to-end throughput.
+
+\textbf{Exactness is a systems enabler.} The verifier never treats the quantized
+expert as authoritative. Instead, the correction representation restores the native
+BF16 bit pattern before the existing expert operator runs. This clean boundary lets
+the system reuse approximate state aggressively without changing the target router,
+acceptance rule, or committed KV semantics. It also simplifies deployment: the
+correction is generated from the same checkpoint as the W4 base, requires no
+retraining, and can be verified independently of the speculative policy. Draft
+quality may affect how much work is saved, but it does not alter which model defines
+the output.
+
+\textbf{The results expose a reusable deployment principle.} The same mechanism wins
+on models with different expert counts and routing widths, on compute-heavy and
+bandwidth-heavy GPUs, and across a substantial memory interval. The absolute balance
+between drafting, reconstruction, and transfer changes across these settings, yet the
+controller presents the same three resources---compact bases, materialized exact
+experts, and one KV trajectory. A deployment can therefore tune residency capacities
+to its device without introducing a new draft model or changing target semantics.
+This is especially attractive for a serving stack that must support several MoE
+families under heterogeneous memory limits.
+
+The memory sweep also clarifies why the benefit need not vary monotonically with
+capacity. Each budget changes which W4 bases and materialized BF16 views survive a
+round boundary, so the effective transfer path changes at discrete residency
+thresholds rather than continuously. What remains invariant is the ordering of the
+two supply strategies: across the complete sweep, reusing a target-derived base and
+moving only its correction retains an advantage over replacing that base with a full
+expert. This behavior links the capacity study back to the representation choice,
+rather than treating the sweep as an independent tuning result.
+
+\textbf{The architecture is complementary to lower-level optimizations.} Expert
+prefetch, asynchronous I/O, fused kernels, and topology-aware placement can accelerate
+either the W4 admission or exact materialization path; proposal schedulers can improve
+accepted length without changing the recovery contract. \system supplies the missing
+state abstraction connecting these techniques: a compact expert has value beyond
+drafting because it remains an exactification base, and a materialized BF16 expert is
+a cacheable view rather than a second checkpoint. This separation of state identity
+from execution precision opens a broader design space for memory-aware speculative
+MoE serving.
+
+\textbf{The resulting abstraction is operational, not merely conceptual.} A serving
+runtime can expose each logical expert as one identity with two executable views:
+compact W4 and materialized BF16. Admission decisions then operate on future value
+rather than tensor size alone: retaining a W4 page preserves both draft capacity and
+the ability to recreate an exact expert, while retaining BF16 removes immediate
+recovery work. This is the key distinction from treating quantization as a separate
+model-compression stage. The representation participates in scheduling, supply, and
+correctness as one managed object.
+
+\textbf{The evidence supports the full-system claim.} End-to-end throughput supplies
+the outcome; the hardware and memory sweeps show portability; union growth identifies
+the pressure point; transfer and residency measurements identify the saved resource;
+and bit-exact reconstruction plus target-authorized commit preserve semantics. No
+single measurement is asked to prove the entire mechanism. Together they show how a
+target-derived draft, exact expert recovery, unified residency, and shared sequence
+state reinforce one another. That composition---rather than an isolated compression
+ratio or speculative policy---is the central systems contribution.
+
+\FloatBarrier
+
+\subsection{Serving implications}
+
+The coupled representation changes what a memory budget buys. In a conventional
+substitute path, draft capacity and exact-verification capacity are separate claims
+on memory: evicting a draft expert destroys proposal capacity, while loading its
+BF16 counterpart consumes a second, larger allocation. In \system, a retained W4
+page preserves two options. It can execute immediately in the draft view, or combine
+with a correction to recreate the exact view. The controller can therefore allocate
+HBM among W4 bases, hot BF16 views, and shared KV according to observed route reuse,
+without changing the checkpoint or speculative algorithm.
+
+Finally, the state hierarchy provides a stable integration boundary. Existing MoE
+kernels continue to consume BF16 experts; existing speculative logic continues to
+consume target logits and commit a target-approved prefix. The new mechanism sits
+between these layers as an expert-supply service backed by target-derived W4 pages
+and corrections. This placement is what lets the same design survive changes in GPU
+generation, memory ceiling, model family, and workload. It also makes the headline
+result more than a collection of isolated speedups: the measurements exercise one
+portable contract for representing, supplying, and authorizing MoE state.

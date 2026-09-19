@@ -1,0 +1,18 @@
+\begin{abstract}
+Speculative decoding (SD) accelerates generation by verifying several draft tokens in
+one target pass. In a memory-constrained mixture-of-experts (MoE) model, however,
+verification exposes a wider union of routed experts precisely when only a small
+fraction of the BF16 expert pool fits in GPU memory. Independent draft weights,
+duplicate sequence state, and full-BF16 miss traffic can therefore consume the
+benefit of fewer target invocations. We present \system, a coupled execution system
+that uses target-derived W4 experts both to draft tokens and as the base for exact
+target-expert reconstruction. Compact corrections recover requested BF16 experts
+bitwise, while unified W4--BF16 residency and one physical KV trajectory reuse state
+across proposal, rollback, verification, and commit. We compare against Classic
+MoE-SubSpec, SS-MoE, and SpecMoE on four MoE families and four workloads, and test
+the design on three GPUs and 8--24~GiB memory budgets. At 8~GiB, \system delivers a
+1.96$\times$ four-family geometric mean over Classic MoE-SubSpec, reaching
+2.57$\times$/2.12$\times$/1.64$\times$/1.65$\times$ on
+Mixtral/DeepSeek/Qwen/OLMoE; cross-platform results remain above the matched Classic
+baseline, while exact recovery reduces transferred expert bytes by 38\%.
+\end{abstract}

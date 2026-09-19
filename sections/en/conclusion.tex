@@ -1,0 +1,13 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+Speculative verification widens the routed-expert working set precisely when
+memory-constrained MoE inference depends on keeping that set small. \system resolves
+the tension by giving one target-derived W4 expert two roles: aligned drafting and the
+base for bit-exact BF16 recovery, coordinated through unified residency and one
+physical KV trajectory. At 8~GiB, the four-family headline reaches a 1.96$\times$
+geometric mean over Classic MoE-SubSpec, with
+2.57$\times$/2.12$\times$/1.64$\times$/1.65$\times$ on
+Mixtral/DeepSeek/Qwen/OLMoE. Consistent gains across three GPUs and 8--24~GiB,
+together with 38\% lower expert-transfer bytes, show that a compact target state can
+serve as both an effective draft and an exact verification substrate.

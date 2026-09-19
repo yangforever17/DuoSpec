@@ -1,0 +1,29 @@
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{url}
+\usepackage{balance}
+\usepackage{placeins}
+\usepackage{xspace}
+% Keep review PDFs reproducible and prevent embedded-figure inclusion records from
+% exposing absolute build paths (for example the server account name).
+\ifdefined\pdfsuppressptexinfo\pdfsuppressptexinfo=-1\fi
+\ifdefined\pdfinfoomitdate\pdfinfoomitdate=1\fi
+\ifdefined\pdftrailerid\pdftrailerid{}\fi
+\graphicspath{{figures/}}
+% IEEEtran defines \bstctlcite; provide the same one-bibliography hook for the
+% ctex reading copy so a BibTeX control entry does not become an unresolved cite.
+\makeatletter
+\providecommand{\bstctlcite}[1]{%
+  \@bsphack
+  \@for\@citeb:=#1\do{%
+    \edef\@citeb{\expandafter\@firstofone\@citeb}%
+    \if@filesw\immediate\write\@auxout{\string\citation{\@citeb}}\fi}%
+  \@esphack}
+\makeatother
+\newcommand{\system}{\textsc{Exact-MoE-SubSpec}\xspace}
+\newcommand{\subspec}{\textsc{MoE-SubSpec}\xspace}
+\newcommand{\todo}[1]{\textcolor{red!70!black}{[TODO: #1]}}
+\newcommand{\duospec}{\textsc{DuoSpec}}

@@ -1,0 +1,52 @@
+\section{Introduction}
+\label{sec:introduction}
+
+Sparse mixture-of-experts (MoE) models reduce arithmetic by activating only a few
+experts per token, yet deployment must still store or move the much larger routed
+pool. When that pool exceeds GPU memory, offloading and caching exploit temporal
+sparsity to keep inference feasible
+\cite{eliseev2023offloading,xue2024moeinfinity,kamahori2025fiddler}. Speculative
+decoding (SD) appears complementary: a lightweight path proposes several tokens and
+the target verifies them together, amortizing sequential target invocations
+\cite{leviathan2023fast}.
+
+The combination hides a conflict. AR reveals experts for one new position at a time,
+whereas batched verification exposes the union selected by a root and multiple
+proposals. Below full residency, this wider union increases simultaneous expert-supply
+demand. A separate draft and duplicate KV cache further reduce the memory left for
+the target; fewer target calls therefore need not mean less data movement.
+
+Existing MoE systems optimize target placement, caching, prefetch, or CPU execution,
+but do not remove the verifier's widened working set
+\cite{xue2024moeinfinity,du2024sida,kong2024swapmoe,cao2025moelightning}. MoE-specific
+SD improves drafting and cache behavior, yet still relies on approximate target
+adaptation or ordinary full-BF16 supply after a miss
+\cite{huang2025moesd,zheng2026ssmoe,bang2026specmoe}. Substitute decoding removes an
+independent routed draft by deriving low-bit experts from the target
+\cite{wang2025subspec}, but its ordinary target path still pages the missed BF16
+expert. This leaves one systems question: can the same compact expert state support
+both speculation and exact target verification under a shared memory ceiling?
+
+Our answer is to treat the quantized draft as reusable target state, not as a second
+model. \system preserves the target architecture, router, and non-routed modules in a
+target-derived W4 path, yielding highly aligned proposals without a separately
+parameterized draft. A compact correction reconstructs any requested BF16 expert
+bitwise from that same W4 base. Unified W4/BF16 residency and one physical KV
+trajectory then make proposal and verification two views of one state hierarchy.
+This coupling converts draft residency, target supply, and sequence state from three
+competing allocations into one coordinated resource hierarchy.
+
+The evaluation follows this causal chain. A working-set trace measures how
+verification width changes the routed-expert union; end-to-end experiments test the
+effect across models, workloads, memory budgets, and three GPU platforms; supply
+attribution connects the speedup to W4 reuse and reduced expert traffic. Our
+contributions are:
+
+\begin{itemize}
+  \item a measurable formulation of the verification-width versus expert-residency
+  conflict in memory-constrained MoE inference;
+  \item a state-reuse design in which one target-derived W4 expert serves drafting and
+  bit-exact BF16 recovery, coordinated by unified residency and shared KV; and
+  \item an end-to-end evaluation against Classic MoE-SubSpec and two MoE-SD
+  baselines, with cross-platform, memory-envelope, and expert-supply evidence.
+\end{itemize}

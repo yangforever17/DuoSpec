@@ -1,0 +1,141 @@
+\section{Exact-MoE-SubSpec}
+\label{sec:method}
+
+\subsection{One state hierarchy, two execution views}
+
+\system targets batch-one inference under a ceiling $B$ that cannot hold the routed
+BF16 expert pool. For layer $\ell$, $C^4_{\ell}$ and $C^{16}_{\ell}$ denote resident
+W4 bases and materialized BF16 experts; both share the same calibrated device budget.
+As Fig.~\ref{fig:overview}(b) shows, one round has four steps: the W4 view drafts up
+to $\gamma$ tokens, logical rollback restores the clean prefix, the native BF16 view
+verifies the root and proposals with on-demand exact experts, and only
+target-authorized state is committed. The two views share the router, attention and
+dense modules, prefill, and one physical KV allocation. Thus the system changes how
+expert state is represented and supplied, not which target logits authorize output.
+
+\subsection{One W4 expert, two roles}
+
+Offline preparation quantizes every target expert's gate/up/down projections into a
+group-64 W4 substitute. The W4 view preserves the target architecture, router,
+routing rule, and all non-routed modules, yielding an aligned training-free draft
+\cite{wang2025subspec}. Crucially, the same W4 object is also the base from which
+verification reconstructs the exact target expert. The design therefore removes an
+auxiliary routed draft store while turning draft residency into reusable verifier
+state.
+
+Quantization alone is approximate. For a dequantized-base BF16 pattern $b$ and target
+pattern $w$, let $h(x)=x[15{:}7]$ and $m(x)=x[6{:}0]$. A correction stores $m(w)$ and
+a two-bit relation code
+\begin{equation}
+c=\begin{cases}
+0,&h(w)=h(b),\\
+1,&h(w)=h(b)-1,\\
+2,&h(w)=h(b)+1,\\
+3,&\text{otherwise.}
+\end{cases}
+\label{eq:correction}
+\end{equation}
+Code 3 indexes a sparse stream of the target's high bits. A fused kernel dequantizes
+the W4 base, applies the coded or escaped bits, and emits
+\begin{equation}
+\operatorname{recover}(b,c,m(w))=(h(w)\ll 7)\,|\,m(w)=w.
+\label{eq:recovery}
+\end{equation}
+The equality is at the bit-pattern level, not numerical proximity. Corrections remain
+in compact host mappings and pass through reusable pinned staging; only the recovered
+expert occupies $C^{16}_{\ell}$ and then executes through the model's native BF16
+operator.
+
+\subsection{Unified residency and exact supply}
+
+Every verification request follows one exclusive path:
+\begin{equation}
+S^{(m)}_{\ell,e}=\begin{cases}
+\text{BF16 hit}, & e\in C^{16}_{\ell},\\
+\text{exact recover}, & e\notin C^{16}_{\ell},\ m=\mathrm{exact},\\
+\text{direct BF16 page-in}, & e\notin C^{16}_{\ell},\ m=\mathrm{ordinary}.
+\end{cases}
+\label{eq:supply}
+\end{equation}
+Recovery reuses a resident W4 base or first admits a cold base into $C^4_{\ell}$,
+then caches the materialized expert in $C^{16}_{\ell}$. Classic MoE-SubSpec instead
+pages the immutable BF16 target after a miss. Requests are deduplicated by
+layer/expert identity across the root and proposals, so one recovered expert serves
+every routed position in the verification batch.
+
+Representation-aware admission lets a W4 base survive eviction of its materialized
+BF16 expert and later regenerate it without another W4 page-in. The controller can
+therefore trade several compact bases against fewer ready-to-run exact experts within
+the same $B$. Ignoring work shared by both methods, reuse is beneficial when
+\begin{equation}
+T_{\mathrm{move}}+T_{\mathrm{batch}}>
+T_{\mathrm{draft}}+T_{\mathrm{corr}}+T_{\mathrm{recover}}+T_{\mathrm{ctrl}},
+\label{eq:benefit}
+\end{equation}
+where the left side captures avoided expert movement and target work, and the right
+side captures proposal, correction, reconstruction, and orchestration. Route overlap,
+accepted length, and the W4/BF16 capacity split jointly shape this inequality;
+Fig.~\ref{fig:f3} measures each consequence rather than attributing speedup to
+compression alone.
+
+\subsection{Shared KV and target authority}
+
+Target prefill establishes clean length $n$ and retains its final input as the first
+root. Drafting appends provisional inputs to the same allocation. Verification resets
+only logical length, recomputes the root/proposal block with exact experts, and
+overwrites that suffix; commit advances through the target-approved prefix, and the
+emitted token becomes the next root. No second prefill, duplicate KV cache, or
+cross-cache copy is required.
+
+Storage reuse never grants authority to draft state. Executable invariants require an
+unchanged physical KV pointer, a byte-identical clean prefix before verification, and
+a target-written committed suffix. A proposal is accepted only when it matches the
+native target token, with the first mismatch replaced by the target. Together with
+Eq.~\eqref{eq:recovery}, native-operator checks, and rejection of undeclared BF16
+fallback, these invariants make drafting approximate but verification exact.
+
+\subsection{Round protocol and compositional correctness}
+
+Table~\ref{tab:round-protocol} makes the coupling explicit. The controller does not
+launch two models and reconcile their states afterward. It advances one target
+sequence through two precision views, changing only the expert representation used
+at each phase. Before verification, routed requests from the root and every proposal
+are unioned by layer and expert identity. A BF16 hit is consumed immediately; every
+miss is resolved by Eq.~\eqref{eq:supply}. The resulting expert view then executes
+the unmodified target layer over the entire verification block.
+
+\begin{table}[t]
+  \centering
+  \caption{One coupled decoding round.}
+  \label{tab:round-protocol}
+  \footnotesize
+  \begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}}cll@{}}
+    \toprule
+    Step & Active view & State transition \\
+    \midrule
+    0 & BF16 target & prefill once; establish clean KV \\
+    1 & target W4 & draft $\gamma$ tokens in shared KV \\
+    2 & controller & rewind logical length; union routes \\
+    3 & W4 $+$ correction & materialize requested BF16 misses \\
+    4 & BF16 target & verify root and proposals in one pass \\
+    5 & controller & commit match or target replacement \\
+    \bottomrule
+  \end{tabular*}
+\end{table}
+
+The protocol composes three local guarantees into an end-to-end one. First,
+\emph{representation integrity} follows from Eq.~\eqref{eq:recovery}: a recovered
+expert is byte-identical to its checkpoint tensor. Second, \emph{execution integrity}
+follows because that tensor enters the native BF16 operator under the target router
+and dense path. Third, \emph{sequence integrity} follows because only target-written
+KV entries cross the commit boundary. Induction over decoding rounds therefore gives
+the same committed token sequence as native target verification under the same
+sampling rule. Approximation influences proposal efficiency, never output authority.
+
+This separation also makes the implementation modular. Expert recovery is a supply
+operation behind the cache interface; speculative scheduling consumes the resulting
+exact view without knowing whether it was a hit, a reconstruction, or an ordinary
+page-in. Conversely, the residency controller observes reuse at expert granularity
+without interpreting token acceptance. The two modules exchange only requested
+expert identities, cache handles, and the clean KV boundary, allowing each to be
+tuned while preserving the exactness contract.
